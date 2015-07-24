@@ -1,0 +1,169 @@
+---
+title: "Machine Learnig Assignament"
+author: "Rodrigo Gomez-Fell"
+date: "22 de julio de 2015"
+output: html_document
+---
+
+#Overview
+
+```{r, echo=FALSE, warning=FALSE}
+library(doParallel)
+registerDoParallel(cores=6) #en este pc hasta 4 cores
+
+```
+In this assignament the goal was to predict how a particular excercise was performed. In order to predict such outcome there where a data frame given, with different meassures of the exercise done by 6 young health participants, where they performed once accuratly (qualityt meassure), and four times with different movement errors (execution mistakes). The classification of the movement where under a variable named "Classe", more info about the project data in [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har).
+
+The idea of fitting a good performing model was accomplished, a Generalized Boosted nmodel (GBM) was finally selected after a few previous approaches. More info on the gbm package in [http://www.saedsayad.com/docs/gbm2.pdf](http://www.saedsayad.com/docs/gbm2.pdf) and [http://www.inside-r.org/packages/cran/gbm/docs/gbm](http://www.inside-r.org/packages/cran/gbm/docs/gbm)
+
+
+#Model Building
+
+The data was presented in two separate data set one called pml-training.csv and a pml-testing.csv, we only used the training and then the test set was used only to submmit the results.
+```{r}
+
+fileUrl.train <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+fileUrl.test <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+train <- read.csv(fileUrl.train, na.strings=c("NA", "", "#DIV/0!"))
+test <- read.csv(fileUrl.test, na.strings=c("NA", "", "#DIV/0!"))
+```
+
+
+##Testing and Training sets (CrossValidation)
+
+In the final model a data partition was used, that saved 40% of the data for testing when the final model is tune and 60% of the data for training. The caret package was used during the whole modelling process.
+
+```{r, warning=FALSE}
+library(caret)
+set.seed(1001)
+trainIndex <- createDataPartition(train$classe, p = 0.60,list=FALSE)
+```
+
+Before the data partition was made, columns 1 to 7 where left out given that they where eitherid tags, time of the sample or other non predictive value.
+
+Then NA where taken on account, and all columns that had more than 50% of NA where left out (idea and code taken from discussion forums in Coursera).
+
+This left a data set of 52 predictors plus teh Classe variable.
+
+Finally the model split
+```{r}
+train.df <- train[,8:160]
+na.train <- train.df[, colSums(is.na(train.df)) < nrow(train.df) * 0.5]
+
+training <- na.train[trainIndex,] 
+testing <- na.train[-trainIndex,] 
+
+```
+
+##Choosing Features 
+
+The first step in choosing the variables was check which predictors contributed very little to the model. We used the nearZeroVar function.
+```{r}
+nzv.training <- nearZeroVar(training[-53], saveMetrics = T)
+```
+
+It didnt gave much information, all the predictors had enough variance to be used in our model.
+
+Second step check for correlation within the predictors, that didnt gave us much information as you can see in the appendix figure 1. There are a very little correlation between variables.
+
+```{r}
+descrCor <- cor(training[,-53], use="pairwise.complete.obs", method="pearson")
+summary(descrCor[upper.tri(descrCor)])
+```
+
+## Preprocessing of the data
+
+```{r}
+preProc <- preProcess(training[,-53],method='BoxCox', verbose=FALSE)
+trainPC <- predict(preProc, training[,-53])
+```
+
+
+##How the model was built
+
+Knowing that was a classification problem, all models used for regression where left aside, and the search was focus only on classification models.
+
+First choice was a bagged model ('Adabag'), it didn't gave the expected results. So a different kind of algorithm was looked for, one that could automaticly choose its own features.
+
+Another dessition we took was use models that will choose predictors and had some sort of inner cross validation, beside the first splitting of the data.
+
+
+##Choosing the model
+
+###Adabag (Bagged Adaboost) Confussion Matrix
+
+Estimated Error’ of this model based on the cross-validation with the Test subset is represented by (1- Overall Accuracy) shown in the resuls of the Confusion Matrix below (0.4322):
+```{r, echo=FALSE}
+bag.CM <- readRDS('AdabagConfMatrix.rds')
+bag.CM
+```
+
+
+###GBM model (Stochastic Gradient Boosting )
+
+Expected ‘Out of Sample Error’ of this model with a depth of three levels would be (1 - 0.953), shown in the resampling results (0.0467196).
+
+```{r, eval=FALSE} 
+gbm.model <- train(training$classe ~., method = 'gbm', data=trainPC, verbose=FALSE)
+
+```
+
+```{r, echo=FALSE}
+gbm.model = readRDS("gbmModel.rds")
+gbm.model
+
+```
+
+In figures 2 and 3 of the appendix the accuracy level is shown and a heat map of kappa bootstraping for each tree level.
+
+Estimated Error of this model based on the cross-validation with the Test subset is represented by (1 - Accuracy) shown in the resuls of the Confusion Matrix below (0.0391):
+```{r}
+testPC <- predict(preProc, testing[,-53])
+gbm.out <- confusionMatrix(testing$classe, predict(gbm.model, testPC))
+gbm.out
+```
+
+##Conclusions
+
+Stochastic Gradient Boosting model was chosen due to is accuracy.
+
+When tested on the original test sample, it predicts at a 100%. 
+
+```{r}
+resultado <- predict(gbm.model, newdata = test)
+resultado
+```
+
+---
+
+#Appendix
+
+##Corrrelation Matrix
+
+###Figure 1. 
+```{r}
+corrplot::corrplot(descrCor, method="square", type="lower")
+```
+
+
+##Model Tuning Paramters
+
+### Figure 2. Accuracy graph with tree levels
+```{r}
+gbm.model = readRDS("gbmModel.rds")
+trellis.par.set(caretTheme())
+plot(gbm.model)
+
+
+```
+
+### Figure 3. Heat Map, with kappa bootstrap iterations and tree levels
+```{r, }
+trellis.par.set(caretTheme())
+plot(gbm.model, metric = "Kappa", plotType = "level",
+     scales = list(x = list(rot = 90)))
+
+
+
+```
